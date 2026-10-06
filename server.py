@@ -25,6 +25,7 @@ from paths import MAX_PATH_INPUTS, PathLookup, parse_path_resource, path_csv_exp
 ROOT = Path(__file__).parent
 ASSETS = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
           "/style.css": ("style.css", "text/css"), "/icons.svg": ("icons.svg", "image/svg+xml"),
+          "/mucaro-mark.svg": ("mucaro-mark.svg", "image/svg+xml"),
           "/world-countries.json": ("world-countries.json", "application/geo+json")}
 
 
