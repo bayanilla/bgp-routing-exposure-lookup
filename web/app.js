@@ -433,6 +433,104 @@
         note:"Country markers reflect CAIDA's registered organization-country field. They place each marker center inside the bundled country boundary; they do not depict a geographic route, network presence, or collector location."
       });
     }
+    groupPathRoadmap(group, organizations) {
+      const node=(tag,text,cls)=>{const element=document.createElement(tag);if(text!==undefined)element.textContent=text;if(cls)element.className=cls;return element;};
+      const svgNode=(tag,cls)=>{const element=document.createElementNS("http://www.w3.org/2000/svg",tag);if(cls)element.setAttribute("class",cls);return element;};
+      const origin=String(group.origin),nodesByKey=new Map(),edgesByKey=new Map();
+      const addNode=(depth,asn)=>{
+        const key=`${depth}:${asn}`;
+        const item=nodesByKey.get(key)||{key,depth,asn,count:0};item.count++;nodesByKey.set(key,item);return key;
+      };
+      for(const neighbor of group.neighbors) for(const path of neighbor.paths||[]) {
+        const asns=(path.asns||[]).map(String),originIndex=asns.lastIndexOf(origin);
+        if(originIndex<0)continue;
+        const keys=[];
+        for(let index=0;index<=originIndex;index++) keys.push(addNode(Math.min(5,originIndex-index),asns[index]));
+        for(let index=0;index<keys.length-1;index++) {
+          if(keys[index]===keys[index+1])continue;
+          const edgeKey=`${keys[index]}|${keys[index+1]}`;
+          edgesByKey.set(edgeKey,(edgesByKey.get(edgeKey)||0)+1);
+        }
+      }
+      const section=document.createElement("section");section.className="roadmap-context";
+      section.append(node("h4","Observed AS-path overview"));
+      section.append(node("p","This filtered view positions networks by their AS-path distance before the selected origin in returned RIPE RIS advertisements. It is not a packet path, physical topology, provider relationship, or traffic-flow diagram.","small muted"));
+      if(!nodesByKey.size) {section.append(node("p","No returned AS-path records were available to draw this overview.","small muted"));return section;}
+      const displayed=new Map(),maxPerColumn=5;
+      for(const depth of [5,4,3,2,1,0]) {
+        const candidates=[...nodesByKey.values()].filter(item=>item.depth===depth).sort((left,right)=>right.count-left.count||Number(left.asn)-Number(right.asn));
+        const selected=depth===0?candidates.filter(item=>item.asn===origin).slice(0,1):candidates.slice(0,maxPerColumn);
+        selected.forEach((item,index)=>displayed.set(item.key,{...item,faded:index>=3}));
+      }
+      const columns=[
+        {depth:5,label:"5+ AS hops",x:100},{depth:4,label:"4 AS hops",x:270},{depth:3,label:"3 AS hops",x:440},
+        {depth:2,label:"2 AS hops",x:610},{depth:1,label:"Adjacent",x:780},{depth:0,label:"Selected origin",x:956}
+      ];
+      const maxRows=Math.max(5,...columns.filter(column=>column.depth!==0).map(column=>[...displayed.values()].filter(item=>item.depth===column.depth).length));
+      const top=42,rowHeight=58,height=top+maxRows*rowHeight+30,originX=956;
+      const svg=svgNode("svg","roadmap-svg");svg.setAttribute("viewBox",`0 0 1140 ${height}`);svg.setAttribute("role","img");svg.setAttribute("aria-label",`Observed AS-path overview for AS${origin}.`);
+      const title=svgNode("title");title.textContent=`Observed AS-path overview for AS${origin}`;svg.append(title);
+      const originBand=svgNode("rect","roadmap-origin-band");originBand.setAttribute("x",String(originX-12));originBand.setAttribute("y","0");originBand.setAttribute("width",String(1140-originX+12));originBand.setAttribute("height",String(height));svg.append(originBand);
+      const positions=new Map();
+      for(const column of columns) {
+        const heading=svgNode("text","roadmap-heading");heading.setAttribute("x",String(column.depth===0?originX+18:column.x));heading.setAttribute("y","24");heading.setAttribute("text-anchor",column.depth===0?"start":"middle");heading.textContent=column.label;svg.append(heading);
+        if(column.depth!==0) {const rule=svgNode("line","roadmap-column");rule.setAttribute("x1",String(column.x));rule.setAttribute("x2",String(column.x));rule.setAttribute("y1","36");rule.setAttribute("y2",String(height-14));svg.append(rule);}
+        const items=[...displayed.values()].filter(item=>item.depth===column.depth).sort((left,right)=>right.count-left.count||Number(left.asn)-Number(right.asn));
+        const y0=top+(maxRows-items.length)*rowHeight/2;
+        items.forEach((item,index)=>positions.set(item.key,{x:column.x,y:column.depth===0?top+maxRows*rowHeight/2:y0+index*rowHeight+rowHeight/2}));
+      }
+      const maxEdgeCount=Math.max(1,...edgesByKey.values());
+      for(const [edgeKey,count] of edgesByKey) {
+        const [fromKey,toKey]=edgeKey.split("|"),from=positions.get(fromKey),to=positions.get(toKey);
+        if(!from||!to)continue;
+        const midpoint=(from.x+to.x)/2,line=svgNode("path",`roadmap-edge${displayed.get(fromKey)?.faded||displayed.get(toKey)?.faded?" roadmap-edge-context":""}`);line.setAttribute("d",`M${from.x},${from.y} C${midpoint},${from.y} ${midpoint},${to.y} ${to.x},${to.y}`);line.setAttribute("fill","none");line.setAttribute("stroke-width",(1+4*Math.sqrt(count/maxEdgeCount)).toFixed(2));line.dataset.from=fromKey;line.dataset.to=toKey;svg.append(line);
+      }
+      for(const item of displayed.values()) {
+        const position=positions.get(item.key);if(!position)continue;
+        const groupNode=svgNode("g",`roadmap-node${item.faded?" roadmap-node-faded":""}${item.depth===0?" roadmap-origin":""}${item.depth===1?" roadmap-adjacent":""}`);groupNode.setAttribute("transform",`translate(${position.x} ${position.y})`);groupNode.dataset.key=item.key;groupNode.setAttribute("role","button");groupNode.setAttribute("tabindex","0");
+        const info=organizations[String(item.asn)]||{},name=info.asName||info.name||"Organization unavailable",shortName=name.length>22?`${name.slice(0,21)}…`:name;
+        groupNode.setAttribute("aria-label",`Inspect AS${item.asn} in the ${item.depth===5?"5 or more":item.depth===0?"selected origin":item.depth} AS-hop column`);
+        const itemTitle=svgNode("title");itemTitle.textContent=`AS${item.asn} · ${name} · shown in ${item.count} returned path/prefix combination${item.count===1?"":"s"}`;groupNode.append(itemTitle);
+        if(item.depth===0) {
+          const bar=svgNode("rect","roadmap-origin-bar");bar.setAttribute("x","0");bar.setAttribute("y","-32");bar.setAttribute("width","13");bar.setAttribute("height","64");groupNode.append(bar);
+          const asn=svgNode("text","roadmap-origin-asn");asn.setAttribute("x","23");asn.setAttribute("y","-4");asn.textContent=`AS${item.asn}`;groupNode.append(asn);
+          const label=svgNode("text","roadmap-origin-label");label.setAttribute("x","23");label.setAttribute("y","15");label.textContent=shortName;groupNode.append(label);
+        } else {
+          const radius=6+8*Math.sqrt(item.count/Math.max(1,...[...displayed.values()].filter(candidate=>candidate.depth!==0).map(candidate=>candidate.count)));
+          const circle=svgNode("circle");circle.setAttribute("r",radius.toFixed(1));groupNode.append(circle);
+          const asn=svgNode("text","roadmap-asn");asn.setAttribute("y",String((-radius-7).toFixed(1)));asn.textContent=`AS${item.asn}`;groupNode.append(asn);
+          const label=svgNode("text","roadmap-label");label.setAttribute("y",String((radius+15).toFixed(1)));label.textContent=shortName;groupNode.append(label);
+        }
+        svg.append(groupNode);
+      }
+      const wrap=document.createElement("div");wrap.className="roadmap-wrap";wrap.append(svg);
+      const detail=node("div",undefined,"roadmap-detail");detail.hidden=true;
+      const depthText=depth=>depth===0?"Selected origin":depth===1?"Adjacent: immediately before the selected origin in a displayed AS path":depth===5?"5 or more AS hops before the selected origin":`${depth} AS hops before the selected origin`;
+      const clear=()=>{
+        svg.querySelectorAll(".roadmap-node-dim,.roadmap-edge-dim,.roadmap-node-selected").forEach(element=>element.classList.remove("roadmap-node-dim","roadmap-edge-dim","roadmap-node-selected"));
+        detail.hidden=true;detail.replaceChildren();
+      };
+      const select=item=>{
+        const directEdges=[...svg.querySelectorAll(".roadmap-edge")].filter(edge=>edge.dataset.from===item.key||edge.dataset.to===item.key);
+        const related=new Set([item.key]);directEdges.forEach(edge=>{related.add(edge.dataset.from);related.add(edge.dataset.to);});
+        svg.querySelectorAll(".roadmap-edge").forEach(edge=>edge.classList.toggle("roadmap-edge-dim",!directEdges.includes(edge)));
+        svg.querySelectorAll(".roadmap-node").forEach(element=>{element.classList.toggle("roadmap-node-dim",!related.has(element.dataset.key));element.classList.toggle("roadmap-node-selected",element.dataset.key===item.key);});
+        const info=organizations[String(item.asn)]||{},name=info.asName||info.name||"Organization unavailable";
+        detail.replaceChildren();
+        const heading=node("p");heading.append(node("strong",`AS${item.asn}`),document.createTextNode(` · ${name}`));
+        const selectionNote=directEdges.length?"The map highlights only directly connected displayed segments. It does not establish a packet path or a provider relationship.":"No directly connected segment for this network is retained in the compact map; its next displayed AS-path position was omitted for readability. This does not establish a packet path or a provider relationship.";
+        detail.append(heading,node("p",`Shown in ${item.count} returned path/prefix combination${item.count===1?"":"s"}. Displayed position: ${depthText(item.depth)}.`),node("p",selectionNote));
+        const button=node("button","Show all displayed paths");button.type="button";button.className="quiet";button.addEventListener("click",clear);detail.append(button);detail.hidden=false;
+      };
+      for(const item of displayed.values()) {
+        const groupNode=svg.querySelector(`.roadmap-node[data-key="${item.key}"]`);if(!groupNode)continue;
+        const activate=()=>select(item);groupNode.addEventListener("click",activate);groupNode.addEventListener("keydown",event=>{if(event.key==="Enter"||event.key===" "){event.preventDefault();activate();}});
+      }
+      section.append(wrap,detail);
+      const omitted=[...nodesByKey.values()].filter(item=>!displayed.has(item.key)).length;
+      section.append(node("p",`The overview shows up to ${maxPerColumn} ASNs per hop column; ${omitted?`${omitted} additional ASNs are omitted for readability. `:""}Line width reflects the number of returned path/prefix combinations in the displayed subset, not traffic volume or confidence.`,"small muted"));
+      return section;
+    }
     countryContext(asns, organizations, origin, options={}) {
       const details=document.createElement("details");details.className="country-context";
       if(options.group)details.classList.add("group-country-context");
@@ -700,6 +798,7 @@
         for(const group of result.groups) {
           const org=result.asns[String(group.origin)]?.name||"Organization not found";
           section.append(node("h3",`AS${group.origin} · ${org}`));
+          section.append(this.groupPathRoadmap(group,result.asns));
           section.append(this.groupCountryContext(group,result.asns));
           const visibility=this.visibilityContext(group);
           const observedAt=result.observation?.observedAt?` · observed ${result.observation.observedAt.replace("T"," ").replace("+00:00"," UTC")}`:"";

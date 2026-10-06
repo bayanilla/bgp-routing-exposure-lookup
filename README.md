@@ -140,6 +140,16 @@ neighbors of AS3333. Record the **RIS observation time**, **collector coverage**
 **CAIDA source dates**, and any **warnings or truncation**. Peer counts measure
 visibility in the collected data, not traffic share or confidence.
 
+Each expanded path begins with an interactive **Observed AS-path overview**. It
+places a compact, filtered subset of returned RIS AS-path records into columns
+from five-or-more hops through the ASN observed immediately before the selected
+origin. Select a displayed ASN to dim unrelated displayed segments and read its
+returned-record count and displayed hop position. The overview is a public
+collector-observation aid: it is not a packet path, physical topology, provider
+relationship, or traffic-flow diagram. A network in the five-or-more-hop column
+is not an observed adjacent ASN, and omitted nodes can interrupt a displayed
+segment for readability.
+
 Each expanded path also offers **Registered organization country context**. It
 maps the CAIDA country field for each AS hop and lists its role, ASN, and
 organization name. For an origin's observed adjacent networks, the map groups
