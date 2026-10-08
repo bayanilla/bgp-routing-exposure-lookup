@@ -34,8 +34,11 @@ class RipeGate:
         self.lock = threading.Lock()
         self.local = threading.local()
         with self.db() as db:
-            db.execute('CREATE TABLE IF NOT EXISTS gate (id INTEGER PRIMARY KEY, day TEXT, used INTEGER, next REAL, failures INTEGER, blocked REAL)')
-            db.execute("INSERT OR IGNORE INTO gate VALUES (1, '', 0, 0, 0, 0)")
+            db.execute('CREATE TABLE IF NOT EXISTS gate (id INTEGER PRIMARY KEY, day TEXT, used INTEGER, next REAL, failures INTEGER, blocked REAL, observed REAL DEFAULT 0)')
+            columns = {row[1] for row in db.execute('PRAGMA table_info(gate)')}
+            if 'observed' not in columns:
+                db.execute('ALTER TABLE gate ADD COLUMN observed REAL DEFAULT 0')
+            db.execute("INSERT OR IGNORE INTO gate (id, day, used, next, failures, blocked, observed) VALUES (1, '', 0, 0, 0, 0, 0)")
             # Preserve today's counter from the earlier bulk prototype, without loading evidence.
             legacy = self.directory / 'queue.sqlite3'
             if is_new and legacy.exists():
@@ -126,12 +129,25 @@ class RipeGate:
                     row = db.execute('SELECT * FROM gate WHERE id=1').fetchone()
                     today = datetime.fromtimestamp(now, timezone.utc).date().isoformat()
                     used = row['used'] if row['day'] == today else 0
-                    if row['blocked'] > now:
-                        raise PauseWork('RIPE requests are cooling down. Try again after '+datetime.fromtimestamp(row['blocked'],timezone.utc).isoformat())
+                    if now < row['observed']:
+                        # Wall-clock time can move backward after an NTP correction.
+                        # Shift saved deadlines by the same amount. This prevents an
+                        # arbitrary pause while preserving any server-requested delay.
+                        rollback = row['observed']-now
+                        db.execute(
+                            'UPDATE gate SET next=MAX(?,next-?),blocked=MAX(?,blocked-?),observed=? WHERE id=1',
+                            (now, rollback, now, rollback, now),
+                        )
+                        row = db.execute('SELECT * FROM gate WHERE id=1').fetchone()
+                    else:
+                        db.execute('UPDATE gate SET observed=? WHERE id=1', (now,))
+                    blocked = row['blocked']
                     wait = row['next']-now
-                    if wait <= 0:
+                    if blocked <= now and wait <= 0:
                         # Reserve each attempt before network I/O, including retries.
                         db.execute('UPDATE gate SET day=?,used=?,next=? WHERE id=1', (today,used+1,now+self.interval))
+                if blocked > now:
+                    raise PauseWork('RIPE requests are cooling down. Try again after '+datetime.fromtimestamp(blocked,timezone.utc).isoformat())
                 if wait > 0:
                     self.report('Waiting for the shared RIPE request pace')
                     self.sleep(min(wait,0.2))

@@ -63,6 +63,23 @@ class GateTests(unittest.TestCase):
         other=RipeGate(self.temp.name,clock=self.clock,sleep=self.clock.sleep)
         with self.assertRaises(PauseWork):other.fetch('v','latest',lambda:self.fail('cooldown bypass'),lambda _:None)
         self.assertGreaterEqual(other.status()['blockedUntil'],self.clock()+3599)
+
+    def test_backward_clock_jump_bounds_persisted_pace(self):
+        self.fetch()
+        self.clock.now-=3600
+        other=RipeGate(self.temp.name,clock=self.clock,sleep=self.clock.sleep)
+        started=[]
+        before=self.clock()
+        other.fetch('v','latest',lambda:started.append(self.clock()) or b'raw',lambda _:None)
+        self.assertEqual(started[0]-before,2)
+
+    def test_backward_clock_jump_preserves_persisted_cooldown(self):
+        def failure():raise HTTPError('u',503,'busy',{'Retry-After':'3600'},None)
+        with self.assertRaises(PauseWork):self.fetch(callback=failure)
+        self.clock.now-=1
+        other=RipeGate(self.temp.name,clock=self.clock,sleep=self.clock.sleep)
+        with self.assertRaises(PauseWork):other.fetch('v','latest',lambda:self.fail('cooldown bypass'),lambda _:None)
+        self.assertGreaterEqual(other.status()['blockedUntil'],self.clock()+3599)
     def test_repeated_errors_open_shared_circuit(self):
         def failure():raise HTTPError('u',503,'busy',{},None)
         with self.assertRaises(PauseWork):self.fetch(callback=failure)
