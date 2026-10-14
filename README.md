@@ -140,15 +140,27 @@ neighbors of AS3333. Record the **RIS observation time**, **collector coverage**
 **CAIDA source dates**, and any **warnings or truncation**. Peer counts measure
 visibility in the collected data, not traffic share or confidence.
 
-Each expanded path begins with an interactive **Observed AS-path overview**. It
-places a compact, filtered subset of returned RIS AS-path records into columns
-from five-or-more hops through the ASN observed immediately before the selected
-origin. Select a displayed ASN to dim unrelated displayed segments and read its
-returned-record count and displayed hop position. The overview is a public
+Each expanded path begins with an interactive **Observed AS-path overview**.
+Use its **View** menu to switch between two renderings; the choice is saved
+only in this browser and the ranked list is the default.
+
+- **Path-trace columns** place returned RIS AS-path records into columns from
+  five-or-more hops through the ASN observed immediately before the selected
+  origin. Select an ASN to trace every returned path through it to the origin;
+  a dashed **+N more** marker opens the rest of its column. Filter by the
+  inferred relationship of the adjacent AS or by RIS collector, and choose how
+  many ASNs each column shows. Adjacent ASNs are outlined by inferred
+  relationship.
+- **Ranked adjacent ASes** list each observed adjacent AS with bars that can be
+  sorted by path/prefix combinations, RIS peers, or collectors. Select one to
+  read its most common preceding AS, AS-path lengths, collectors, and prefixes.
+
+Both views offer **Show in evidence table**, which opens that adjacent AS's
+returned paths in the table below. The overview is a public
 collector-observation aid: it is not a packet path, physical topology, provider
 relationship, or traffic-flow diagram. A network in the five-or-more-hop column
-is not an observed adjacent ASN, and omitted nodes can interrupt a displayed
-segment for readability.
+is not an observed adjacent ASN, and line width counts returned records, not
+traffic.
 
 Each expanded path also offers **Registered organization country context**. It
 maps the CAIDA country field for each AS hop and lists its role, ASN, and

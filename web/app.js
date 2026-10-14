@@ -6,7 +6,7 @@
     connectedCallback() {
       if (this.root) return;
       this.root = this.attachShadow({mode: "open"});
-      this.root.innerHTML = `<link rel="stylesheet" href="${new URL("style.css?revision=map-sheet-2", assets)}">
+      this.root.innerHTML = `<link rel="stylesheet" href="${new URL("style.css?revision=overview-views-1", assets)}">
         <div class="view-tab-bar"><div class="view-tabs" role="tablist" aria-label="Lookup view"><button role="tab" id="paths-tab" aria-selected="true">Observed BGP paths</button><button role="tab" id="origins-tab" aria-selected="false">Origin mapping</button><button role="tab" id="live-tab" aria-selected="false">Live RIS View</button></div><label class="theme-picker" for="theme"><span>Theme</span><select id="theme" title="Theme is saved only in this browser"><option value="soc">SOC Dark</option><option value="nord">Nord Calm</option><option value="contrast">High Contrast</option><option value="matrix">Matrix</option><option value="mucaro">Mucaro Dusk</option><option value="notebook">Field Notebook</option><option value="amber">Terminal Amber</option></select></label></div>
         <form><section class="entry"><div><div class="entry-head"><label for="resources">IP addresses &amp; networks</label><div class="row"><button type="button" id="example" title="Load example addresses">Load example</button><button type="button" id="import">${icon("upload")}Import file</button><input id="file" type="file" accept=".csv,.txt,.tsv,text/plain,text/csv" hidden></div></div>
         <textarea id="resources" spellcheck="false" placeholder="193.0.0.1&#10;193.0.0.0/24" aria-label="IP addresses, CIDRs, or start-end ranges"></textarea><p class="privacy" id="filename">CSV, TSV, or TXT · Up to 1,000 entries</p></div>
@@ -433,103 +433,245 @@
         note:"Country markers reflect CAIDA's registered organization-country field. They place each marker center inside the bundled country boundary; they do not depict a geographic route, network presence, or collector location."
       });
     }
-    groupPathRoadmap(group, organizations) {
+    overviewPreference() {
+      try { const saved=localStorage.getItem("bgp-routing-exposure-overview"); if(["columns","ranked"].includes(saved))return saved; }
+      catch {}
+      return "ranked";
+    }
+    showEvidence(entry) {
+      if(!entry)return;
+      entry.details.open=true;
+      entry.row.scrollIntoView({behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth",block:"center"});
+      entry.row.classList.remove("evidence-flash");void entry.row.offsetWidth;entry.row.classList.add("evidence-flash");
+      entry.row.focus({preventScroll:true});
+    }
+    groupOverview(group, organizations, showEvidence) {
+      const node=(tag,text,cls)=>{const element=document.createElement(tag);if(text!==undefined)element.textContent=text;if(cls)element.className=cls;return element;};
+      const section=node("section",undefined,"roadmap-context"),head=node("div",undefined,"overview-head"),picker=node("select"),label=node("label",undefined,"overview-picker"),body=node("div");
+      [["columns","Path-trace columns"],["ranked","Ranked adjacent ASes"]].forEach(([value,text])=>picker.append(new Option(text,value)));
+      picker.title="The overview view is saved only in this browser";
+      label.append(node("span","View"),picker);head.append(node("h4","Observed AS-path overview"),label);section.append(head,body);
+      const render=view=>{picker.value=view;body.replaceChildren(view==="ranked"?this.overviewRanked(group,organizations,showEvidence):this.overviewColumns(group,organizations,showEvidence));};
+      picker.onchange=()=>{
+        try { localStorage.setItem("bgp-routing-exposure-overview",picker.value); } catch {}
+        (this.overviewRenderers||[render]).forEach(apply=>apply(picker.value));
+      };
+      this.overviewRenderers?.push(render);
+      render(this.overviewPreference());
+      return section;
+    }
+    overviewColumns(group, organizations, showEvidence) {
       const node=(tag,text,cls)=>{const element=document.createElement(tag);if(text!==undefined)element.textContent=text;if(cls)element.className=cls;return element;};
       const svgNode=(tag,cls)=>{const element=document.createElementNS("http://www.w3.org/2000/svg",tag);if(cls)element.setAttribute("class",cls);return element;};
-      const origin=String(group.origin),nodesByKey=new Map(),edgesByKey=new Map();
-      const addNode=(depth,asn)=>{
-        const key=`${depth}:${asn}`;
-        const item=nodesByKey.get(key)||{key,depth,asn,count:0};item.count++;nodesByKey.set(key,item);return key;
-      };
-      for(const neighbor of group.neighbors) for(const path of neighbor.paths||[]) {
-        const asns=(path.asns||[]).map(String),originIndex=asns.lastIndexOf(origin);
-        if(originIndex<0)continue;
-        const keys=[];
-        for(let index=0;index<=originIndex;index++) keys.push(addNode(Math.min(5,originIndex-index),asns[index]));
-        for(let index=0;index<keys.length-1;index++) {
-          if(keys[index]===keys[index+1])continue;
-          const edgeKey=`${keys[index]}|${keys[index+1]}`;
-          edgesByKey.set(edgeKey,(edgesByKey.get(edgeKey)||0)+1);
-        }
+      const relationshipLabels={provider:"Transit provider",peer:"Peer",customer:"Customer",unknown:"Unknown"};
+      const origin=String(group.origin),wrap=node("div");
+      wrap.append(node("p","This filtered view positions networks by their AS-path distance before the selected origin in returned RIPE RIS advertisements. It is not a packet path, physical topology, provider relationship, or traffic-flow diagram.","small muted"));
+      const records=group.neighbors.flatMap(neighbor=>(neighbor.paths||[]).map(path=>({...path,asns:(path.asns||[]).map(String),adjacent:String(neighbor.asn),relationship:neighbor.relationship||"unknown"}))).filter(path=>path.asns.includes(origin));
+      if(!records.length) {wrap.append(node("p","No returned AS-path records were available to draw this overview.","small muted"));return wrap;}
+      const relationshipOf=new Map(group.neighbors.map(neighbor=>[String(neighbor.asn),neighbor.relationship||"unknown"]));
+      const state={relationships:new Set(records.map(path=>path.relationship)),collector:"",limit:5,expanded:new Set(),selected:null};
+      const controls=node("div",undefined,"overview-controls"),chips=node("div",undefined,"overview-chips");
+      chips.setAttribute("role","group");chips.setAttribute("aria-label","Inferred relationship of the observed adjacent AS");
+      for(const relationship of ["provider","peer","customer","unknown"].filter(item=>state.relationships.has(item))) {
+        const chip=node("button",undefined,`overview-chip rel-${relationship}`);chip.type="button";chip.setAttribute("aria-pressed","true");
+        chip.append(node("span",undefined,"overview-swatch"),document.createTextNode(relationshipLabels[relationship]));
+        chip.onclick=()=>{state.relationships.has(relationship)?state.relationships.delete(relationship):state.relationships.add(relationship);chip.setAttribute("aria-pressed",String(state.relationships.has(relationship)));state.selected=null;draw();};
+        chips.append(chip);
       }
-      const section=document.createElement("section");section.className="roadmap-context";
-      section.append(node("h4","Observed AS-path overview"));
-      section.append(node("p","This filtered view positions networks by their AS-path distance before the selected origin in returned RIPE RIS advertisements. It is not a packet path, physical topology, provider relationship, or traffic-flow diagram.","small muted"));
-      if(!nodesByKey.size) {section.append(node("p","No returned AS-path records were available to draw this overview.","small muted"));return section;}
-      const displayed=new Map(),maxPerColumn=5;
-      for(const depth of [5,4,3,2,1,0]) {
-        const candidates=[...nodesByKey.values()].filter(item=>item.depth===depth).sort((left,right)=>right.count-left.count||Number(left.asn)-Number(right.asn));
-        const selected=depth===0?candidates.filter(item=>item.asn===origin).slice(0,1):candidates.slice(0,maxPerColumn);
-        selected.forEach((item,index)=>displayed.set(item.key,{...item,faded:index>=3}));
-      }
+      const collector=node("select"),collectorLabel=node("label",undefined,"overview-control");collector.append(new Option("All collectors",""));
+      [...new Set(records.flatMap(path=>path.collectors||[]))].sort().forEach(name=>collector.append(new Option(name,name)));
+      collector.onchange=()=>{state.collector=collector.value;state.selected=null;draw();};collectorLabel.append(node("span","Collector"),collector);
+      const limit=node("select"),limitLabel=node("label",undefined,"overview-control");[["5","5"],["8","8"],["12","12"],["0","All"]].forEach(([value,text])=>limit.append(new Option(text,value)));
+      limit.onchange=()=>{state.limit=Number(limit.value);state.expanded.clear();draw();};limitLabel.append(node("span","ASNs per column"),limit);
+      const count=node("span",undefined,"small muted overview-count");count.setAttribute("aria-live","polite");
+      controls.append(chips,collectorLabel,limitLabel,count);
+      const stage=node("div",undefined,"roadmap-wrap"),detail=node("div",undefined,"roadmap-detail"),footnote=node("p",undefined,"small muted");
+      wrap.append(controls,stage,detail,footnote);
+      wrap.addEventListener("keydown",event=>{if(event.key==="Escape"&&state.selected){state.selected=null;draw();}});
       const columns=[
         {depth:5,label:"5+ AS hops",x:100},{depth:4,label:"4 AS hops",x:270},{depth:3,label:"3 AS hops",x:440},
         {depth:2,label:"2 AS hops",x:610},{depth:1,label:"Adjacent",x:780},{depth:0,label:"Selected origin",x:956}
       ];
-      const maxRows=Math.max(5,...columns.filter(column=>column.depth!==0).map(column=>[...displayed.values()].filter(item=>item.depth===column.depth).length));
-      const top=42,rowHeight=58,height=top+maxRows*rowHeight+30,originX=956;
-      const svg=svgNode("svg","roadmap-svg");svg.setAttribute("viewBox",`0 0 1140 ${height}`);svg.setAttribute("role","img");svg.setAttribute("aria-label",`Observed AS-path overview for AS${origin}.`);
-      const title=svgNode("title");title.textContent=`Observed AS-path overview for AS${origin}`;svg.append(title);
-      const originBand=svgNode("rect","roadmap-origin-band");originBand.setAttribute("x",String(originX-12));originBand.setAttribute("y","0");originBand.setAttribute("width",String(1140-originX+12));originBand.setAttribute("height",String(height));svg.append(originBand);
-      const positions=new Map();
-      for(const column of columns) {
-        const heading=svgNode("text","roadmap-heading");heading.setAttribute("x",String(column.depth===0?originX+18:column.x));heading.setAttribute("y","24");heading.setAttribute("text-anchor",column.depth===0?"start":"middle");heading.textContent=column.label;svg.append(heading);
-        if(column.depth!==0) {const rule=svgNode("line","roadmap-column");rule.setAttribute("x1",String(column.x));rule.setAttribute("x2",String(column.x));rule.setAttribute("y1","36");rule.setAttribute("y2",String(height-14));svg.append(rule);}
-        const items=[...displayed.values()].filter(item=>item.depth===column.depth).sort((left,right)=>right.count-left.count||Number(left.asn)-Number(right.asn));
-        const y0=top+(maxRows-items.length)*rowHeight/2;
-        items.forEach((item,index)=>positions.set(item.key,{x:column.x,y:column.depth===0?top+maxRows*rowHeight/2:y0+index*rowHeight+rowHeight/2}));
-      }
-      const maxEdgeCount=Math.max(1,...edgesByKey.values());
-      for(const [edgeKey,count] of edgesByKey) {
-        const [fromKey,toKey]=edgeKey.split("|"),from=positions.get(fromKey),to=positions.get(toKey);
-        if(!from||!to)continue;
-        const midpoint=(from.x+to.x)/2,line=svgNode("path",`roadmap-edge${displayed.get(fromKey)?.faded||displayed.get(toKey)?.faded?" roadmap-edge-context":""}`);line.setAttribute("d",`M${from.x},${from.y} C${midpoint},${from.y} ${midpoint},${to.y} ${to.x},${to.y}`);line.setAttribute("fill","none");line.setAttribute("stroke-width",(1+4*Math.sqrt(count/maxEdgeCount)).toFixed(2));line.dataset.from=fromKey;line.dataset.to=toKey;svg.append(line);
-      }
-      for(const item of displayed.values()) {
-        const position=positions.get(item.key);if(!position)continue;
-        const groupNode=svgNode("g",`roadmap-node${item.faded?" roadmap-node-faded":""}${item.depth===0?" roadmap-origin":""}${item.depth===1?" roadmap-adjacent":""}`);groupNode.setAttribute("transform",`translate(${position.x} ${position.y})`);groupNode.dataset.key=item.key;groupNode.setAttribute("role","button");groupNode.setAttribute("tabindex","0");
-        const info=organizations[String(item.asn)]||{},name=info.asName||info.name||"Organization unavailable",shortName=name.length>22?`${name.slice(0,21)}…`:name;
-        groupNode.setAttribute("aria-label",`Inspect AS${item.asn} in the ${item.depth===5?"5 or more":item.depth===0?"selected origin":item.depth} AS-hop column`);
-        const itemTitle=svgNode("title");itemTitle.textContent=`AS${item.asn} · ${name} · shown in ${item.count} returned path/prefix combination${item.count===1?"":"s"}`;groupNode.append(itemTitle);
-        if(item.depth===0) {
-          const bar=svgNode("rect","roadmap-origin-bar");bar.setAttribute("x","0");bar.setAttribute("y","-32");bar.setAttribute("width","13");bar.setAttribute("height","64");groupNode.append(bar);
-          const asn=svgNode("text","roadmap-origin-asn");asn.setAttribute("x","23");asn.setAttribute("y","-4");asn.textContent=`AS${item.asn}`;groupNode.append(asn);
-          const label=svgNode("text","roadmap-origin-label");label.setAttribute("x","23");label.setAttribute("y","15");label.textContent=shortName;groupNode.append(label);
-        } else {
-          const radius=6+8*Math.sqrt(item.count/Math.max(1,...[...displayed.values()].filter(candidate=>candidate.depth!==0).map(candidate=>candidate.count)));
-          const circle=svgNode("circle");circle.setAttribute("r",radius.toFixed(1));groupNode.append(circle);
-          const asn=svgNode("text","roadmap-asn");asn.setAttribute("y",String((-radius-7).toFixed(1)));asn.textContent=`AS${item.asn}`;groupNode.append(asn);
-          const label=svgNode("text","roadmap-label");label.setAttribute("y",String((radius+15).toFixed(1)));label.textContent=shortName;groupNode.append(label);
+      const depthText=depth=>depth===0?"Selected origin":depth===1?"Adjacent: immediately before the selected origin in a returned AS path":depth===5?"5 or more AS hops before the selected origin":`${depth} AS hops before the selected origin`;
+      const truncated=group.neighbors.filter(neighbor=>neighbor.pathsTruncated).length;
+      const draw=()=>{
+        const paths=records.filter(path=>state.relationships.has(path.relationship)&&(!state.collector||(path.collectors||[]).includes(state.collector)));
+        count.textContent=`${paths.length} of ${records.length} returned path/prefix combinations`;
+        stage.replaceChildren();detail.replaceChildren();detail.hidden=true;
+        if(!paths.length) {stage.append(node("p","No returned path records match these filters.","small muted"));footnote.textContent="";return;}
+        const nodes=new Map();
+        const pathKeys=paths.map(path=>{
+          const originIndex=path.asns.lastIndexOf(origin),keys=[];
+          for(let index=0;index<=originIndex;index++) {
+            const depth=Math.min(5,originIndex-index),asn=path.asns[index],key=`${depth}:${asn}`;
+            if(keys[keys.length-1]!==key)keys.push(key);
+            const item=nodes.get(key)||{key,depth,asn,paths:new Set()};item.paths.add(path);nodes.set(key,item);
+          }
+          return keys;
+        });
+        const displayed=new Map(),bucketOf=new Map();
+        for(const column of columns) {
+          const candidates=[...nodes.values()].filter(item=>item.depth===column.depth).sort((left,right)=>right.paths.size-left.paths.size||Number(left.asn)-Number(right.asn));
+          const shown=column.depth===0||!state.limit||state.expanded.has(column.depth)?candidates:candidates.slice(0,state.limit);
+          shown.forEach(item=>displayed.set(item.key,item));
+          const rest=candidates.filter(item=>!displayed.has(item.key));
+          if(rest.length){const key=`${column.depth}:more`;displayed.set(key,{key,depth:column.depth,more:true,members:rest});rest.forEach(item=>bucketOf.set(item.key,key));}
         }
-        svg.append(groupNode);
-      }
-      const wrap=document.createElement("div");wrap.className="roadmap-wrap";wrap.append(svg);
-      const detail=node("div",undefined,"roadmap-detail");detail.hidden=true;
-      const depthText=depth=>depth===0?"Selected origin":depth===1?"Adjacent: immediately before the selected origin in a displayed AS path":depth===5?"5 or more AS hops before the selected origin":`${depth} AS hops before the selected origin`;
-      const clear=()=>{
-        svg.querySelectorAll(".roadmap-node-dim,.roadmap-edge-dim,.roadmap-node-selected").forEach(element=>element.classList.remove("roadmap-node-dim","roadmap-edge-dim","roadmap-node-selected"));
-        detail.hidden=true;detail.replaceChildren();
+        const edges=new Map(),pathEdges=[];
+        pathKeys.forEach((keys,pathIndex)=>{
+          const mapped=keys.map(key=>displayed.has(key)?key:bucketOf.get(key)),own=[];
+          for(let index=0;index<mapped.length-1;index++) {
+            const from=mapped[index],to=mapped[index+1];
+            if(from===to||displayed.get(from).depth===displayed.get(to).depth)continue;
+            const key=`${from}|${to}`,edge=edges.get(key)||{key,from,to,count:0};edge.count++;edges.set(key,edge);own.push(key);
+          }
+          pathEdges.push({path:paths[pathIndex],nodes:new Set(mapped),edges:own});
+        });
+        if(state.selected&&!displayed.has(state.selected))state.selected=null;
+        const traced=state.selected?pathEdges.filter(entry=>entry.nodes.has(state.selected)):[];
+        const hotEdges=new Set(traced.flatMap(entry=>entry.edges)),hotNodes=new Set(traced.flatMap(entry=>[...entry.nodes]));
+        const maxRows=Math.max(5,...columns.filter(column=>column.depth!==0).map(column=>[...displayed.values()].filter(item=>item.depth===column.depth).length));
+        const top=42,rowHeight=58,height=top+maxRows*rowHeight+30,originX=956;
+        const svg=svgNode("svg","roadmap-svg");svg.setAttribute("viewBox",`0 0 1140 ${height}`);svg.setAttribute("aria-label",`Observed AS-path overview for AS${origin}. Select an ASN to trace its returned paths.`);
+        const title=svgNode("title");title.textContent=`Observed AS-path overview for AS${origin}`;svg.append(title);
+        const originBand=svgNode("rect","roadmap-origin-band");originBand.setAttribute("x",String(originX-12));originBand.setAttribute("y","0");originBand.setAttribute("width",String(1140-originX+12));originBand.setAttribute("height",String(height));svg.append(originBand);
+        const positions=new Map();
+        for(const column of columns) {
+          const heading=svgNode("text","roadmap-heading");heading.setAttribute("x",String(column.depth===0?originX+18:column.x));heading.setAttribute("y","24");heading.setAttribute("text-anchor",column.depth===0?"start":"middle");heading.textContent=column.label;svg.append(heading);
+          if(column.depth!==0) {const rule=svgNode("line","roadmap-column");rule.setAttribute("x1",String(column.x));rule.setAttribute("x2",String(column.x));rule.setAttribute("y1","36");rule.setAttribute("y2",String(height-14));svg.append(rule);}
+          const items=[...displayed.values()].filter(item=>item.depth===column.depth);
+          const y0=top+(maxRows-items.length)*rowHeight/2;
+          items.forEach((item,index)=>positions.set(item.key,{x:column.x,y:column.depth===0?top+maxRows*rowHeight/2:y0+index*rowHeight+rowHeight/2}));
+        }
+        const maxEdgeCount=Math.max(1,...[...edges.values()].map(edge=>edge.count));
+        for(const edge of edges.values()) {
+          const from=positions.get(edge.from),to=positions.get(edge.to);
+          const midpoint=(from.x+to.x)/2,line=svgNode("path",`roadmap-edge${state.selected?hotEdges.has(edge.key)?" roadmap-edge-traced":" roadmap-edge-dim":""}`);
+          line.setAttribute("d",`M${from.x},${from.y} C${midpoint},${from.y} ${midpoint},${to.y} ${to.x},${to.y}`);line.setAttribute("fill","none");line.setAttribute("stroke-width",(1+5*Math.sqrt(edge.count/maxEdgeCount)).toFixed(2));svg.append(line);
+        }
+        const maxCount=Math.max(1,...[...displayed.values()].filter(item=>item.depth!==0&&!item.more).map(item=>item.paths.size));
+        for(const item of displayed.values()) {
+          const position=positions.get(item.key),relationship=item.depth===1&&!item.more?relationshipOf.get(item.asn)||"unknown":"";
+          const groupNode=svgNode("g",`roadmap-node${item.more?" roadmap-more":""}${item.depth===0?" roadmap-origin":""}${relationship?` roadmap-adjacent rel-${relationship}`:""}${state.selected===item.key?" roadmap-node-selected":""}${state.selected&&!hotNodes.has(item.key)?" roadmap-node-dim":""}`);
+          groupNode.setAttribute("transform",`translate(${position.x} ${position.y})`);groupNode.dataset.key=item.key;groupNode.setAttribute("role","button");groupNode.setAttribute("tabindex","0");
+          const itemTitle=svgNode("title");groupNode.append(itemTitle);
+          let activate;
+          if(item.more) {
+            groupNode.setAttribute("aria-label",`Show ${item.members.length} more ASNs in the ${item.depth===5?"5 or more":item.depth} AS-hop column`);
+            itemTitle.textContent=`${item.members.slice(0,15).map(member=>`AS${member.asn}`).join(", ")}${item.members.length>15?", …":""}`;
+            const pill=svgNode("rect");pill.setAttribute("x","-42");pill.setAttribute("y","-12");pill.setAttribute("width","84");pill.setAttribute("height","24");pill.setAttribute("rx","12");groupNode.append(pill);
+            const text=svgNode("text");text.setAttribute("y","4");text.textContent=`+${item.members.length} more`;groupNode.append(text);
+            activate=()=>{state.expanded.add(item.depth);draw();};
+          } else {
+            const info=organizations[item.asn]||{},name=info.asName||info.name||"Organization unavailable",shortName=name.length>22?`${name.slice(0,21)}…`:name;
+            groupNode.setAttribute("aria-label",`Trace returned paths through AS${item.asn} in the ${item.depth===5?"5 or more":item.depth===0?"selected origin":item.depth} AS-hop column`);
+            itemTitle.textContent=`AS${item.asn} · ${info.name||name} · shown in ${item.paths.size} returned path/prefix combination${item.paths.size===1?"":"s"}`;
+            if(item.depth===0) {
+              const bar=svgNode("rect","roadmap-origin-bar");bar.setAttribute("x","0");bar.setAttribute("y","-32");bar.setAttribute("width","13");bar.setAttribute("height","64");groupNode.append(bar);
+              const asn=svgNode("text","roadmap-origin-asn");asn.setAttribute("x","23");asn.setAttribute("y","-4");asn.textContent=`AS${item.asn}`;groupNode.append(asn);
+              const label=svgNode("text","roadmap-origin-label");label.setAttribute("x","23");label.setAttribute("y","15");label.textContent=shortName;groupNode.append(label);
+            } else {
+              const radius=6+8*Math.sqrt(item.paths.size/maxCount);
+              const circle=svgNode("circle");circle.setAttribute("r",radius.toFixed(1));groupNode.append(circle);
+              const asn=svgNode("text","roadmap-asn");asn.setAttribute("y",String((-radius-7).toFixed(1)));asn.textContent=`AS${item.asn}`;groupNode.append(asn);
+              const label=svgNode("text","roadmap-label");label.setAttribute("y",String((radius+15).toFixed(1)));label.textContent=shortName;groupNode.append(label);
+            }
+            activate=()=>{state.selected=state.selected===item.key?null:item.key;draw();};
+          }
+          const run=()=>{activate();stage.querySelector(`.roadmap-node[data-key="${item.key}"]`)?.focus();};
+          groupNode.addEventListener("click",run);groupNode.addEventListener("keydown",event=>{if(event.key==="Enter"||event.key===" "){event.preventDefault();run();}});
+          svg.append(groupNode);
+        }
+        stage.append(svg);
+        const grouped=[...displayed.values()].filter(item=>item.more).reduce((sum,item)=>sum+item.members.length,0);
+        footnote.textContent=`${grouped?`${grouped} ASNs are grouped into “more” markers; select one to show its whole column. `:""}Line width reflects the number of returned path/prefix combinations in the current filter, not traffic volume or confidence.${truncated?` Path evidence for ${truncated} observed adjacent AS${truncated===1?" is":"es is"} truncated, so only returned records are drawn.`:""}`;
+        if(!state.selected)return;
+        const item=displayed.get(state.selected),info=organizations[item.asn]||{},relationship=relationshipOf.get(item.asn)||"unknown";
+        const heading=node("p");heading.append(node("strong",`AS${item.asn}`),document.createTextNode(` · ${info.name||info.asName||"Organization unavailable"}${info.country?` · ${info.country}`:""}`));
+        if(item.depth===1){heading.append(document.createTextNode(" · "),node("span",`${relationshipLabels[relationship]} (inferred)`,`badge rel-badge rel-${relationship}`));}
+        const via=new Map();traced.forEach(entry=>via.set(entry.path.adjacent,(via.get(entry.path.adjacent)||0)+1));
+        detail.append(heading,node("p",`Traced through ${traced.length} of ${paths.length} filtered path/prefix combinations. Displayed position: ${depthText(item.depth)}.${item.depth>1?` Observed before the selected origin through ${[...via].sort((left,right)=>right[1]-left[1]).map(([asn,total])=>`AS${asn} (${total})`).join(", ")}.`:""}`));
+        const list=node("div",undefined,"overview-paths");
+        traced.map(entry=>entry.path).sort((left,right)=>(right.peerCount||0)-(left.peerCount||0)).slice(0,5).forEach(path=>{
+          const record=node("div");record.append(node("div",`${path.prefix} · ${path.peerCount} collector peers · ${(path.collectors||[]).join(", ")}`,"small muted"));
+          const chain=node("div",undefined,"as-path");
+          path.asns.forEach((asn,index)=>{if(index)chain.append(node("span","→","muted"));chain.append(node("span",`AS${asn}`,`as-hop${asn===origin?" origin-hop":asn===item.asn?" traced-hop":""}`));});
+          record.append(chain);list.append(record);
+        });
+        detail.append(list);
+        if(traced.length>5)detail.append(node("p",`Showing the 5 most widely observed of ${traced.length} traced combinations.`,"small muted"));
+        detail.append(node("p","Tracing follows returned route advertisements observed by RIS. It does not establish a packet path, traffic flow, or a provider relationship.","small muted"));
+        const actions=node("div",undefined,"toolbar");
+        if(item.depth===1){const show=node("button","Show in evidence table");show.type="button";show.className="quiet";show.onclick=()=>showEvidence(item.asn);actions.append(show);}
+        const clear=node("button","Clear trace");clear.type="button";clear.className="quiet";clear.onclick=()=>{state.selected=null;draw();};actions.append(clear);
+        detail.append(actions);detail.hidden=false;
       };
-      const select=item=>{
-        const directEdges=[...svg.querySelectorAll(".roadmap-edge")].filter(edge=>edge.dataset.from===item.key||edge.dataset.to===item.key);
-        const related=new Set([item.key]);directEdges.forEach(edge=>{related.add(edge.dataset.from);related.add(edge.dataset.to);});
-        svg.querySelectorAll(".roadmap-edge").forEach(edge=>edge.classList.toggle("roadmap-edge-dim",!directEdges.includes(edge)));
-        svg.querySelectorAll(".roadmap-node").forEach(element=>{element.classList.toggle("roadmap-node-dim",!related.has(element.dataset.key));element.classList.toggle("roadmap-node-selected",element.dataset.key===item.key);});
-        const info=organizations[String(item.asn)]||{},name=info.asName||info.name||"Organization unavailable";
-        detail.replaceChildren();
-        const heading=node("p");heading.append(node("strong",`AS${item.asn}`),document.createTextNode(` · ${name}`));
-        const selectionNote=directEdges.length?"The map highlights only directly connected displayed segments. It does not establish a packet path or a provider relationship.":"No directly connected segment for this network is retained in the compact map; its next displayed AS-path position was omitted for readability. This does not establish a packet path or a provider relationship.";
-        detail.append(heading,node("p",`Shown in ${item.count} returned path/prefix combination${item.count===1?"":"s"}. Displayed position: ${depthText(item.depth)}.`),node("p",selectionNote));
-        const button=node("button","Show all displayed paths");button.type="button";button.className="quiet";button.addEventListener("click",clear);detail.append(button);detail.hidden=false;
-      };
-      for(const item of displayed.values()) {
-        const groupNode=svg.querySelector(`.roadmap-node[data-key="${item.key}"]`);if(!groupNode)continue;
-        const activate=()=>select(item);groupNode.addEventListener("click",activate);groupNode.addEventListener("keydown",event=>{if(event.key==="Enter"||event.key===" "){event.preventDefault();activate();}});
+      draw();
+      return wrap;
+    }
+    overviewRanked(group, organizations, showEvidence) {
+      const node=(tag,text,cls)=>{const element=document.createElement(tag);if(text!==undefined)element.textContent=text;if(cls)element.className=cls;return element;};
+      const relationshipLabels={provider:"Transit provider",peer:"Peer",customer:"Customer",unknown:"Unknown"};
+      const origin=String(group.origin),wrap=node("div");
+      wrap.append(node("p","Observed adjacent ASes appear immediately before the selected origin in returned RIPE RIS advertisements. Bars compare returned evidence counts; they are not traffic share, confidence, or a confirmed entry point.","small muted"));
+      if(!group.neighbors.length) {wrap.append(node("p","Only direct origin observations were available; no observed adjacent AS can be identified.","small muted"));return wrap;}
+      const sorts={paths:["Path/prefix combinations",neighbor=>neighbor.pathCount||0],peers:["RIS peers",neighbor=>neighbor.peerCount||0],collectors:["Collectors",neighbor=>(neighbor.collectors||[]).length]};
+      const state={sort:"paths",selected:null};
+      const controls=node("div",undefined,"overview-controls"),sortGroup=node("div",undefined,"overview-chips");
+      sortGroup.setAttribute("role","group");sortGroup.setAttribute("aria-label","Sort observed adjacent ASes");
+      controls.append(node("span","Sort by","small muted"),sortGroup);
+      const board=node("div",undefined,"overview-board"),list=node("div",undefined,"overview-rank"),detail=node("div",undefined,"roadmap-detail");
+      board.append(list,detail);wrap.append(controls,board);
+      for(const [key,[label]] of Object.entries(sorts)) {
+        const button=node("button",label,"overview-chip");button.type="button";button.setAttribute("aria-pressed",String(key===state.sort));
+        button.onclick=()=>{state.sort=key;sortGroup.querySelectorAll("button").forEach(other=>other.setAttribute("aria-pressed",String(other===button)));draw();};
+        sortGroup.append(button);
       }
-      section.append(wrap,detail);
-      const omitted=[...nodesByKey.values()].filter(item=>!displayed.has(item.key)).length;
-      section.append(node("p",`The overview shows up to ${maxPerColumn} ASNs per hop column; ${omitted?`${omitted} additional ASNs are omitted for readability. `:""}Line width reflects the number of returned path/prefix combinations in the displayed subset, not traffic volume or confidence.`,"small muted"));
-      return section;
+      const renderDetail=()=>{
+        const neighbor=group.neighbors.find(item=>String(item.asn)===state.selected),asn=state.selected,info=organizations[asn]||{},relationship=neighbor.relationship||"unknown",paths=neighbor.paths||[];
+        detail.replaceChildren();detail.className=`roadmap-detail rel-${relationship}`;
+        const heading=node("p");heading.append(node("strong",`AS${asn}`),document.createTextNode(` · ${info.name||"Organization not found"}${info.country?` · ${info.country}`:""} · `),node("span",`${relationshipLabels[relationship]} (inferred)`,`badge rel-badge rel-${relationship}`));
+        detail.append(heading,node("p",`Observed immediately before AS${origin} in ${neighbor.pathCount} returned path/prefix combinations, from ${neighbor.peerCount} distinct collector peers on ${(neighbor.collectors||[]).length} RIS collectors.${neighbor.pathsTruncated?` The details below use the ${paths.length} returned records.`:""}`));
+        const upstream=new Map();
+        paths.forEach(path=>{const asns=(path.asns||[]).map(String),index=asns.lastIndexOf(origin)-2;if(index>=0)upstream.set(asns[index],(upstream.get(asns[index])||0)+1);});
+        const ranked=[...upstream].sort((left,right)=>right[1]-left[1]||Number(left[0])-Number(right[0])).slice(0,6);
+        detail.append(node("h5","Most common AS before this adjacent AS"));
+        if(ranked.length) {
+          const bars=node("div",undefined,"overview-bars");
+          ranked.forEach(([upstreamAsn,total])=>{
+            const upstreamInfo=organizations[upstreamAsn]||{},row=node("div",undefined,"overview-bar-row"),bar=node("span",undefined,"overview-bar"),fill=node("span");
+            fill.style.width=`${100*total/ranked[0][1]}%`;bar.append(fill);bar.setAttribute("aria-hidden","true");
+            row.append(node("span",`AS${upstreamAsn}${upstreamInfo.asName||upstreamInfo.name?` ${upstreamInfo.asName||upstreamInfo.name}`:""} → AS${asn} → AS${origin}`),node("span",String(total),"overview-rank-value"),bar);bars.append(row);
+          });
+          detail.append(bars);
+        } else detail.append(node("p","No returned record shows an AS before this adjacent AS.","small muted"));
+        const lengths=[2,3,4,5,6,7].map(size=>paths.filter(path=>Math.min(7,(path.asns||[]).map(String).lastIndexOf(origin)+1)===size).length),most=Math.max(1,...lengths);
+        detail.append(node("h5","AS-path length, including the origin"));
+        const histogram=node("div",undefined,"overview-histogram");histogram.setAttribute("role","img");histogram.setAttribute("aria-label",`Returned path lengths: ${lengths.map((total,index)=>`${index===5?"7 or more":index+2} ASNs: ${total}`).join(", ")}`);
+        lengths.forEach((total,index)=>{const column=node("div"),bar=node("i");bar.style.height=`${48*total/most}px`;column.append(node("span",total?String(total):""),bar,node("span",index===5?"7+":String(index+2)));histogram.append(column);});
+        detail.append(histogram);
+        const tags=(title,values)=>{const wrapTags=node("div",undefined,"overview-tags");values.forEach(value=>wrapTags.append(node("span",value)));detail.append(node("h5",title),wrapTags);};
+        tags("RIS collectors",neighbor.collectors||[]);tags("Observed prefixes",neighbor.prefixes||[]);
+        const actions=node("div",undefined,"toolbar"),show=node("button","Show in evidence table");show.type="button";show.className="quiet";show.onclick=()=>showEvidence(asn);actions.append(show);detail.append(actions);
+      };
+      const draw=()=>{
+        const [label,value]=sorts[state.sort],neighbors=[...group.neighbors].sort((left,right)=>value(right)-value(left)||Number(left.asn)-Number(right.asn)),max=Math.max(1,...neighbors.map(value));
+        if(!state.selected)state.selected=String(neighbors[0].asn);
+        list.replaceChildren();
+        for(const neighbor of neighbors) {
+          const asn=String(neighbor.asn),info=organizations[asn]||{},relationship=neighbor.relationship||"unknown";
+          const row=node("button",undefined,`overview-rank-row rel-${relationship}`);row.type="button";row.dataset.asn=asn;row.setAttribute("aria-pressed",String(asn===state.selected));
+          row.setAttribute("aria-label",`AS${asn}, ${info.name||"organization not found"}, ${relationshipLabels[relationship]} (inferred), ${value(neighbor)} ${label.toLowerCase()}`);
+          const who=node("span",undefined,"overview-rank-who");who.append(node("strong",info.name||"Organization not found"),node("span",`AS${asn}${info.asName?` · ${info.asName}`:""}`,"muted"));
+          const bar=node("span",undefined,"overview-bar"),fill=node("span");fill.style.width=`${100*value(neighbor)/max}%`;bar.append(fill);
+          row.append(who,node("span",relationshipLabels[relationship],`badge rel-badge rel-${relationship}`),bar,node("span",String(value(neighbor)),"overview-rank-value"));
+          row.onclick=()=>{state.selected=asn;draw();list.querySelector(`[data-asn="${asn}"]`)?.focus();};
+          list.append(row);
+        }
+        renderDetail();
+      };
+      draw();
+      return wrap;
     }
     countryContext(asns, organizations, origin, options={}) {
       const details=document.createElement("details");details.className="country-context";
@@ -787,7 +929,7 @@
     renderPaths() {
       this.showCompleteness();
       this.el("empty").hidden=true;this.el("path-results").hidden=false;
-      const container=this.el("path-content");container.replaceChildren();
+      const container=this.el("path-content");container.replaceChildren();this.overviewRenderers=[];
       const node=(tag,text,cls)=>{const element=document.createElement(tag);if(text!==undefined)element.textContent=text;if(cls)element.className=cls;return element;};
       const relationshipLabels={provider:"Transit provider",peer:"Peer",customer:"Customer",unknown:"Unknown"};
       for (const result of this.payload.results) {
@@ -798,7 +940,8 @@
         for(const group of result.groups) {
           const org=result.asns[String(group.origin)]?.name||"Organization not found";
           section.append(node("h3",`AS${group.origin} · ${org}`));
-          section.append(this.groupPathRoadmap(group,result.asns));
+          const evidenceRows=new Map();
+          section.append(this.groupOverview(group,result.asns,asn=>this.showEvidence(evidenceRows.get(String(asn)))));
           section.append(this.groupCountryContext(group,result.asns));
           const visibility=this.visibilityContext(group);
           const observedAt=result.observation?.observedAt?` · observed ${result.observation.observedAt.replace("T"," ").replace("+00:00"," UTC")}`:"";
@@ -807,12 +950,12 @@
           const thead=node("thead"),heading=node("tr");["Observed adjacent AS","Relationship (inferred)","RIS peers","Collectors","Observed adjacency"].forEach(text=>heading.append(node("th",text)));thead.append(heading);table.append(thead);
           const tbody=node("tbody");table.append(tbody);
           for(const neighbor of group.neighbors) {
-            const row=node("tr");tbody.append(row);
+            const row=node("tr");row.tabIndex=-1;tbody.append(row);
             const identity=node("td",undefined,"provider");identity.append(node("strong",result.asns[String(neighbor.asn)]?.name||"Organization not found"),node("span",`AS${neighbor.asn} · ${result.asns[String(neighbor.asn)]?.asName||""}`,"sub"));row.append(identity);
             const rel=node("td");rel.append(node("span",relationshipLabels[neighbor.relationship],`badge ${neighbor.relationship==="provider"?"mapped":neighbor.relationship==="unknown"?"neutral":"review"}`));row.append(rel);
             row.append(node("td",String(neighbor.peerCount)),node("td",String(neighbor.collectors.length)),node("td",`AS${neighbor.asn} → AS${group.origin}`,"asn"));
             const evidenceRow=node("tr"),cell=node("td");cell.colSpan=5;cell.className="evidence-cell";evidenceRow.append(cell);tbody.append(evidenceRow);
-            const details=node("details");details.append(node("summary",`${neighbor.pathCount} observed path/prefix combinations · ${neighbor.prefixes.length} prefixes`));cell.append(details);
+            const details=node("details");evidenceRows.set(String(neighbor.asn),{row,details});details.append(node("summary",`${neighbor.pathCount} observed path/prefix combinations · ${neighbor.prefixes.length} prefixes`));cell.append(details);
             const list=node("div",undefined,"path-list");details.append(list);let shown=0;
             const more=node("button","Show more paths");more.type="button";details.append(more);
             const appendPaths=()=>{
