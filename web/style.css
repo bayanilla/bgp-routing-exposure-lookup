@@ -29,7 +29,8 @@ button.primary,#resolve.primary,#live-start.primary { background:var(--accent); 
 button.primary:hover:not(:disabled),#resolve.primary:hover:not(:disabled),#live-start.primary:hover:not(:disabled) { background:var(--accent-hover); }
 #resolve.paths-action { background:var(--action); border-color:color-mix(in srgb,var(--action-border) 55%,var(--border)); color:var(--action-text); }
 #resolve.paths-action:hover:not(:disabled) { background:var(--action-hover); }
-#cancel-job { color:var(--danger); border-color:color-mix(in srgb,var(--danger) 55%,var(--border-strong)); background:transparent; }
+#resolve.cancel-action { background:var(--danger); border-color:color-mix(in srgb,var(--danger) 78%,var(--border-strong)); color:#fff; }
+#resolve.cancel-action:hover:not(:disabled) { background:color-mix(in srgb,var(--danger) 84%,#000); }
 button.icon { width:44px; padding:8px; }
 svg { width:17px; height:17px; flex:none; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
 :focus-visible { outline:2px solid var(--accent); outline-offset:3px; }

@@ -7,7 +7,7 @@
       if (this.root) return;
       this.root = this.attachShadow({mode: "open"});
       this.root.innerHTML = `<link rel="stylesheet" href="${new URL("style.css?revision=overview-views-1", assets)}">
-        <div class="view-tab-bar"><div class="view-tabs" role="tablist" aria-label="Lookup view"><button role="tab" id="paths-tab" aria-selected="true">Observed BGP paths</button><button role="tab" id="origins-tab" aria-selected="false">Origin mapping</button><button role="tab" id="live-tab" aria-selected="false">Live RIS View</button></div><label class="theme-picker" for="theme"><span>Theme</span><select id="theme" title="Theme is saved only in this browser"><option value="soc">SOC Dark</option><option value="nord">Nord Calm</option><option value="contrast">High Contrast</option><option value="matrix">Matrix</option><option value="mucaro">Mucaro Dusk</option><option value="notebook">Field Notebook</option><option value="amber">Terminal Amber</option></select></label></div>
+        <div class="view-tab-bar"><div class="view-tabs" role="tablist" aria-label="Lookup view"><button role="tab" id="paths-tab" aria-selected="true">Observed BGP paths</button><button role="tab" id="origins-tab" aria-selected="false">Origin mapping</button><button role="tab" id="live-tab" aria-selected="false">Live RIS View</button></div><label class="theme-picker" for="theme"><span>Theme</span><select id="theme" title="Theme is saved only in this browser"><option value="soc">SOC Dark</option><option value="notebook">Field Notebook</option><option value="nord">Nord Calm</option><option value="contrast">High Contrast</option><option value="matrix">Matrix</option><option value="mucaro">Mucaro Dusk</option><option value="amber">Terminal Amber</option></select></label></div>
         <form><section class="entry"><div><div class="entry-head"><label for="resources">IP addresses &amp; networks</label><div class="row"><button type="button" id="example" title="Load example addresses">Load example</button><button type="button" id="import">${icon("upload")}Import file</button><input id="file" type="file" accept=".csv,.txt,.tsv,text/plain,text/csv" hidden></div></div>
         <textarea id="resources" spellcheck="false" placeholder="193.0.0.1&#10;193.0.0.0/24" aria-label="IP addresses, CIDRs, or start-end ranges"></textarea><p class="privacy" id="filename">CSV, TSV, or TXT · Up to 1,000 entries</p></div>
         <div class="configuration"><fieldset><legend>Routing date</legend><div class="mode"><label><input name="mode" type="radio" value="latest" checked><span>Latest</span></label><label><input name="mode" type="radio" value="historical"><span>Historical</span></label></div><div class="date-wrap" hidden><label for="date">Snapshot date (UTC)</label><input id="date" type="date" min="2005-05-09"></div></fieldset><button class="primary" id="resolve" type="submit">${icon("search")}Resolve networks</button><p class="privacy">Inputs stay on the lookup server. No connections are made to imported IPs.</p></div></section></form>
@@ -23,7 +23,7 @@
         <div class="notice" id="notice"></div>
         <p id="batch-progress" role="status" hidden></p>
         <p id="result-completeness" class="warning" role="status" hidden></p>
-        <button id="cancel-job" type="button" hidden>Cancel lookup</button>
+        <button id="switch-to-paths" type="button" hidden>Open Observed BGP paths</button>
         <div id="status" class="status" role="status" aria-live="polite">Ready</div>
         <section id="results" hidden><div class="summary"><div class="metric"><strong id="total">0</strong><span>Imported</span></div><div class="metric mapped"><strong id="mapped">0</strong><span>Mapped</span></div><div class="metric review"><strong id="review">0</strong><span>Review</span></div><div class="metric"><strong id="unmapped">0</strong><span>Unmapped</span></div></div>
         <div class="result-head"><h2>Network attribution</h2><div class="toolbar"><input id="search" type="search" placeholder="Filter results" aria-label="Filter results"><select id="filter" aria-label="Result status"><option value="all">All results</option><option value="mapped">Mapped</option><option value="review">Needs review</option><option value="unmapped">Unmapped</option></select><button id="csv" class="icon" title="Export CSV" aria-label="Export CSV">${icon("download")}</button><button id="json" title="Export JSON">Export JSON</button></div></div>
@@ -47,7 +47,7 @@
       this.el("replay-investigation").onclick=()=>this.replayInvestigation();
       this.el("comparison-export").onclick=()=>this.download(JSON.stringify({createdAt:this.investigation.createdAt,tool:this.investigation.tool,coverageMeaning:this.investigation.coverageMeaning,comparison:this.investigation.comparison},null,2),"application/json","routing-comparison.json");
       this.el("snapshot-select").onchange=()=>this.showSnapshot();
-      this.el("cancel-job").onclick=()=>this.cancelLookup();
+      this.el("switch-to-paths").onclick=()=>{this.setView("paths");this.status("AS number retained. Find its observed public BGP paths when ready.");};
       this.refreshRequests();this.requestTimer=setInterval(()=>this.refreshRequests(),5000);
       this.refreshAccess();this.accessTimer=setInterval(()=>this.refreshAccess(),10000);
       this.el("paths-tab").onclick=()=>this.setView("paths");
@@ -123,7 +123,8 @@
       this.investigation=null;this.bundleBlob=null;this.job=null;this.payload=null;
       ["paths","origins","live"].forEach(name=>{this.el(`${name}-tab`).setAttribute("aria-selected",String(name===view));this.el(`${name}-tab`).tabIndex=name===view?0:-1;});
       this.el("results").hidden=true;this.el("path-results").hidden=true;this.el("live-view").hidden=!live;this.el("empty").hidden=live;
-      ["request-count","request-notice","notice","batch-progress","result-completeness","cancel-job","status"].forEach(id=>this.el(id).hidden=live);
+      ["request-count","request-notice","notice","batch-progress","result-completeness","status"].forEach(id=>this.el(id).hidden=live);
+      this.el("switch-to-paths").hidden=true;
       if(live)return;
       this.root.querySelector('label[for="resources"]').textContent=paths?"ASN, IP address, or network":"IP addresses & networks";
       this.el("resources").placeholder=paths?"AS3333\n193.0.0.1\n193.0.0.0/24":"193.0.0.1\n193.0.0.0/24";
@@ -250,7 +251,7 @@
       this.controller?.abort();
       clearTimeout(this.timer);
       this.controller = new AbortController();
-      this.job=null;this.el("cancel-job").hidden=true;
+      this.job=null;
       this.payload = null;
       this.showProgress(null);this.el("result-completeness").hidden=true;
       this.investigation=null;this.bundleBlob=null;
@@ -261,6 +262,12 @@
       this.el("empty").hidden = false;
       const text = this.el("resources").value.trim();
       if (!text) return this.status("Add at least one IP address or network.", true);
+      const asnInput=/^AS?([1-9]\d{0,9})$/i.exec(text);
+      if (this.view==="origins" && asnInput) {
+        this.el("switch-to-paths").hidden=false;
+        return this.status(`AS${asnInput[1]} is an AS number. Origin Mapping accepts IP addresses, CIDRs, and IP ranges.`, true);
+      }
+      this.el("switch-to-paths").hidden=true;
       this.setBusy(true);
       this.status("Preparing lookup",false,true);
       try {
@@ -271,7 +278,7 @@
           if(!date||!comparisonDate||date>=comparisonDate) throw new Error("Choose an earlier and a later historical date.");
         }
         this.job = await this.request("/jobs", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({text,date,mode:researchMode?"investigation":this.view,comparisonDate})});
-        this.el("cancel-job").hidden=false;this.el("cancel-job").disabled=false;
+        this.activateCancelAction();
         this.started = Date.now();
         await this.poll();
       } catch(error) { this.status(error.message, true); this.setBusy(false); }
@@ -292,13 +299,26 @@
     }
     async cancelLookup() {
       if(!this.job)return;
-      this.el("cancel-job").disabled=true;
+      this.el("resolve").disabled=true;
       try {await this.request(`/jobs/${this.job.id}/cancel`,{method:"POST",headers:{"X-Job-Token":this.job.token}});this.status("Cancelling. An in-flight request may finish; completed results will remain available.");}
-      catch(error){this.status(error.message,true);this.el("cancel-job").disabled=false;}
+      catch(error){this.status(error.message,true);this.el("resolve").disabled=false;}
+    }
+    activateCancelAction() {
+      const button=this.el("resolve");
+      button.type="button";button.disabled=false;button.onclick=()=>this.cancelLookup();
+      button.classList.remove("primary","paths-action");button.classList.add("cancel-action");
+      button.textContent="Cancel lookup";
+    }
+    resetResolveAction() {
+      const button=this.el("resolve"),paths=this.view==="paths";
+      button.type="submit";button.disabled=false;button.onclick=null;
+      button.classList.remove("cancel-action");button.classList.toggle("primary",!paths);button.classList.toggle("paths-action",paths);
+      button.innerHTML=icon("search")+(paths?"Find observed paths":"Resolve networks");
     }
     setBusy(busy) {
-      if(!busy)this.el("cancel-job").hidden=true;
-      ["resolve","import","example","resources","date","paths-tab","origins-tab","live-tab","capture","compare-dates","compare-before","compare-after","open-investigation","replay-investigation","bundle-export","comparison-export","snapshot-select"].forEach(id=>this.el(id).disabled=busy);
+      if(!busy)this.resetResolveAction();
+      else if(!this.job)this.el("resolve").disabled=true;
+      ["import","example","resources","date","paths-tab","origins-tab","live-tab","capture","compare-dates","compare-before","compare-after","open-investigation","replay-investigation","bundle-export","comparison-export","snapshot-select"].forEach(id=>this.el(id).disabled=busy);
       this.root.querySelectorAll('[name="mode"]').forEach(input=>input.disabled=busy);
     }
     async poll() {
